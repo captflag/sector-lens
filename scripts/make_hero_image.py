@@ -57,7 +57,12 @@ PAD = 48
 COL_GAP = 24
 
 
-def font(path: str, size: int) -> ImageFont.FreeTypeFont:
+def font(path: str, size: int):
+    if not Path(path).exists():
+        win_map = {SANS: 'C:/Windows/Fonts/arial.ttf', SANS_BOLD: 'C:/Windows/Fonts/arialbd.ttf', MONO: 'C:/Windows/Fonts/consola.ttf', MONO_BOLD: 'C:/Windows/Fonts/consolab.ttf'}
+        fb = win_map.get(path, 'C:/Windows/Fonts/arial.ttf')
+        if Path(fb).exists(): return ImageFont.truetype(fb, size)
+        return ImageFont.load_default()
     return ImageFont.truetype(path, size)
 
 
