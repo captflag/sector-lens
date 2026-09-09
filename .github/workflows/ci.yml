@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      # The committed sample database means the suite needs no network and no
+      # API key. If this step ever needs either, something has regressed.
+      - name: Test
+        run: python -m pytest tests -q
+
+  evaluate:
+    name: evaluation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      # Runs on the deterministic provider, so it is free and reproducible.
+      # The threshold guards the grounding and discipline dimensions: prose
+      # quality is expected to sit lower without a model behind it.
+      - name: Score answers
+        run: python -m sectorlens.evals.runner --fail-under 0.80 --json eval-report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval-report.json
+
+  rebuild:
+    name: ingest from source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      # Proves the committed database is reproducible rather than a blob
+      # nobody can regenerate. Hits the upstream data source, so it is the one
+      # job allowed to touch the network.
+      - name: Rebuild the database from upstream
+        run: python -m sectorlens.ingest.build_db --fresh
+
+      - name: Confirm the personas still diverge
+        run: python scripts/demo_personas.py --sector tech

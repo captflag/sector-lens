@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..agent.core import Agent, available_options
+from ..agent.llm import get_budget
 from ..agent.errors import classify
 from ..agent.schemas import AgentRequest, AgentResponse
 from ..config import load_personas, load_sectors
@@ -53,6 +54,7 @@ async def health() -> dict[str, Any]:
         "model": settings.model,
         "personas": sorted(load_personas()),
         "sectors": sorted(load_sectors()),
+        "llm_budget": get_budget(settings).status().as_dict(),
     }
 
 

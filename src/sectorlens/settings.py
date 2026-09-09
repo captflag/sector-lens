@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     effort: str = "medium"
     max_tokens: int = 16000
     max_tool_rounds: int = 6
+    #: Model-backed requests allowed per UTC day. 0 means unlimited, which
+    #: is right locally; a public demo should set it so the API key cannot
+    #: be drained by whoever finds the URL.
+    daily_llm_budget: int = 0
 
     db_path: Path = Path("data/sector_intel.db")
     sec_user_agent: str = "Sector Lens contact@example.com"

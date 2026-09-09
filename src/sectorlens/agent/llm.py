@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from ..config import Persona, Sector
 from ..formatting import fmt_value, pct_rank
 from ..settings import Settings
+from .budget import RequestBudget
 from .mcp_client import McpToolbox
 from .prompts import build_system_prompt, build_user_prompt
 from .schemas import AgentAnswer, Evidence, answer_json_schema
@@ -335,10 +336,22 @@ def _candidate_mentions(query: str) -> list[str]:
 class DeterministicProvider:
     """Composes an answer from MCP tool output with no model in the loop."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, reason: str | None = None) -> None:
         self.settings = settings
         self.name = "deterministic"
         self.model = None
+        #: Why this provider is answering, when it is standing in for a model.
+        self.reason = reason
+
+    def _provider_note(self) -> str:
+        """Say plainly that no model reasoned over this, and why."""
+        base = ("Answer composed by the deterministic provider; no language "
+                "model reasoned over this evidence.")
+        if self.reason == "daily_budget_exhausted":
+            return (base + " The daily model-request budget for this deployment "
+                    "is spent; it resets at 00:00 UTC. Retrieval, ranking and "
+                    "evidence are unaffected.")
+        return base
 
     async def _answer_signals(self, query: str, persona: Persona,
                               sector: Sector, toolbox: McpToolbox,
@@ -384,8 +397,7 @@ class DeterministicProvider:
                 "EDGAR adapter populates headcount for filers that tag "
                 "dei:EntityNumberOfEmployees.")
 
-        caveats.append("Answer composed by the deterministic provider; no "
-                       "language model reasoned over this evidence.")
+        caveats.append(self._provider_note())
         if out_of_scope:
             caveats.append(
                 "These were named in the question but are not in the database: "
@@ -503,8 +515,7 @@ class DeterministicProvider:
                    if f["severity"] in ("warn", "error")][:5]
         if scope_note:
             caveats.insert(0, scope_note)
-        caveats.append("Answer composed by the deterministic provider; no "
-                       "language model reasoned over this evidence.")
+        caveats.append(self._provider_note())
         if out_of_scope:
             caveats.append(
                 "These were named in the question but are not in the database: "
@@ -519,8 +530,28 @@ class DeterministicProvider:
             confidence="low")
 
 
+#: Process-wide, so every entry point shares one allowance.
+_BUDGET: RequestBudget | None = None
+
+
+def get_budget(settings: Settings) -> RequestBudget:
+    global _BUDGET
+    if _BUDGET is None:
+        _BUDGET = RequestBudget(settings.daily_llm_budget)
+    return _BUDGET
+
+
 def build_provider(settings: Settings) -> LLMProvider:
+    """Pick a provider for one request.
+
+    Falls back to the deterministic provider when no key is configured OR when
+    the day's model budget is spent. Both are degradations rather than
+    failures: the retrieval, the persona weighting and the evidence are
+    unaffected, and the response says which provider answered.
+    """
     provider = settings.effective_provider()
-    if provider == "anthropic":
-        return AnthropicProvider(settings)
-    return DeterministicProvider(settings)
+    if provider != "anthropic":
+        return DeterministicProvider(settings)
+    if not get_budget(settings).try_spend():
+        return DeterministicProvider(settings, reason="daily_budget_exhausted")
+    return AnthropicProvider(settings)
