@@ -202,3 +202,81 @@ CREATE TABLE IF NOT EXISTS data_quality_findings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dq_scope ON data_quality_findings(scope, ref);
+
+-- ---------------------------------------------------------------------------
+-- Filing text
+-- ---------------------------------------------------------------------------
+-- Everything above this line is numeric, which caps what the agent can argue:
+-- it can rank on a margin gap but cannot say what management attributed the
+-- gap to. These tables hold narrative sections of annual filings so a claim
+-- can cite what a company actually wrote.
+--
+-- The provenance discipline is the same as the numeric side. A retrieved
+-- passage is useless as evidence unless the reader can see which company,
+-- which filing, which section and which date it came from, so every chunk
+-- resolves back to all four.
+
+CREATE TABLE IF NOT EXISTS filings (
+    id           INTEGER PRIMARY KEY,
+    company_id   INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    accession    TEXT NOT NULL,          -- SEC accession number, the filing's id
+    form         TEXT NOT NULL,          -- 10-K, 10-Q, ...
+    filed_date   TEXT,
+    period_end   TEXT,
+    source_url   TEXT,
+    source_id    INTEGER REFERENCES sources(id),
+    run_id       INTEGER REFERENCES ingest_runs(id),
+    retrieved_at TEXT NOT NULL,
+    UNIQUE (company_id, accession)
+);
+
+CREATE INDEX IF NOT EXISTS idx_filings_company ON filings(company_id);
+
+-- Chunks are the retrieval unit. `section` is the filing item they came from
+-- (risk factors, MD&A), kept so a question about risk is not answered with a
+-- passage from the business description.
+CREATE TABLE IF NOT EXISTS filing_chunks (
+    id          INTEGER PRIMARY KEY,
+    filing_id   INTEGER NOT NULL REFERENCES filings(id) ON DELETE CASCADE,
+    section     TEXT NOT NULL,
+    ordinal     INTEGER NOT NULL,        -- position within the section
+    text        TEXT NOT NULL,
+    char_count  INTEGER NOT NULL,
+    UNIQUE (filing_id, section, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_filing ON filing_chunks(filing_id);
+
+-- Lexical index over the chunks.
+--
+-- FTS5/BM25 rather than embeddings, deliberately: it needs no API key, no
+-- model download and no vector store, so the whole retrieval path stays
+-- reproducible offline and deployable anywhere the rest of this runs. Filing
+-- text is also unusually favourable to lexical search -- the useful queries
+-- are full of specific terms (a segment name, "pricing pressure", a customer)
+-- that dense retrieval tends to blur.
+--
+-- The honest limit: BM25 cannot match a paraphrase that shares no vocabulary
+-- with the passage. Adding a dense index alongside and fusing the rankings is
+-- the natural extension, and the schema does not stand in its way.
+CREATE VIRTUAL TABLE IF NOT EXISTS filing_chunks_fts USING fts5(
+    text,
+    content='filing_chunks',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS filing_chunks_ai AFTER INSERT ON filing_chunks BEGIN
+    INSERT INTO filing_chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS filing_chunks_ad AFTER DELETE ON filing_chunks BEGIN
+    INSERT INTO filing_chunks_fts(filing_chunks_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS filing_chunks_au AFTER UPDATE ON filing_chunks BEGIN
+    INSERT INTO filing_chunks_fts(filing_chunks_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+    INSERT INTO filing_chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;

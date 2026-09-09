@@ -38,6 +38,8 @@ from ..settings import get_settings
 # burned a round trip recovering. An enum makes that call unrepresentable.
 SectorId = Literal[tuple(load_sectors())]      # type: ignore[valid-type]
 PersonaId = Literal[tuple(load_personas())]    # type: ignore[valid-type]
+#: Filing sections indexed for retrieval, from the ingest adapter.
+FilingSection = Literal["risk_factors", "mdna"]
 
 mcp = MCPServer(
     name="sectorlens-sector-intel",
@@ -205,6 +207,33 @@ def get_metric_history(ticker: str, metric: str) -> dict[str, Any]:
     """
     with _conn() as c:
         return q.get_metric_history(c, ticker, metric)
+
+
+@mcp.tool(
+    description=(
+        "Search what companies wrote about themselves in their annual filings "
+        "-- risk factors and management's discussion. Use this for any "
+        "question about WHY something is happening, what management "
+        "attributes a result to, or what a company says it is exposed to; the "
+        "numeric tools can rank a margin but cannot explain one. Returns "
+        "passages with the ticker, filing date and section attached, so a "
+        "claim can be attributed. Says so explicitly when no filing text is "
+        "loaded, or when nothing matches -- treat that as the answer."
+    )
+)
+def search_filings(query: str, sector: SectorId | None = None,
+                   ticker: str | None = None,
+                   section: FilingSection | None = None,
+                   limit: int = 6) -> dict[str, Any]:
+    """Args:
+    query: what to look for, in natural language.
+    sector: optional sector id to restrict the search to.
+    ticker: optional single company to restrict the search to.
+    section: optional filing section -- risk_factors or mdna.
+    limit: passages to return (capped at 100).
+    """
+    with _conn() as c:
+        return q.search_filings(c, query, sector, ticker, section, limit)
 
 
 @mcp.tool(

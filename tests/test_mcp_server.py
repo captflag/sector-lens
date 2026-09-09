@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "list_sectors", "list_companies", "find_company", "get_company_profile",
     "get_company_signals", "screen_sector", "get_sector_benchmarks",
     "compare_companies", "describe_data_coverage", "get_metric_history",
+    "search_filings",
 }
 
 

@@ -11,6 +11,7 @@ tool call can mutate the database.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Any, Iterable, Sequence
 
@@ -554,3 +555,147 @@ def get_metric_history(conn: sqlite3.Connection, ticker: str,
         "direction": "rising" if change > 0 else "falling" if change < 0 else "flat",
     }
     return out
+
+
+#: FTS5 has its own query grammar, so a natural-language question cannot be
+#: passed through untouched -- an apostrophe or a bare "AND" is a syntax error,
+#: and a hyphen means NOT. Words are extracted and re-quoted instead.
+_FTS_TOKEN = re.compile(r"[A-Za-z0-9']{3,}")
+
+#: Words that match half the corpus and rank nothing usefully.
+_FTS_STOPWORDS = frozenset({
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "from",
+    "what", "which", "how", "why", "does", "did", "has", "have", "had", "you",
+    "your", "our", "their", "its", "about", "any", "all", "can", "will",
+    "would", "should", "there", "they", "them", "than", "then", "into",
+})
+
+
+def _fts_query(text: str) -> str:
+    """Turn a question into a safe FTS5 query.
+
+    Tokens are OR-ed rather than AND-ed: a question phrased in a user's words
+    rarely shares every term with the passage that answers it, and BM25 already
+    ranks documents matching more of them higher. Requiring all terms would
+    mostly return nothing.
+    """
+    tokens = [t.lower() for t in _FTS_TOKEN.findall(text or "")]
+    tokens = [t for t in tokens if t not in _FTS_STOPWORDS]
+    seen: list[str] = []
+    for token in tokens:
+        if token not in seen:
+            seen.append(token)
+    return " OR ".join(f'"{t}"' for t in seen[:24])
+
+
+def search_filings(conn: sqlite3.Connection, query: str,
+                   sector: str | None = None, ticker: str | None = None,
+                   section: str | None = None,
+                   limit: int | None = None) -> dict[str, Any]:
+    """Search the narrative sections of annual filings.
+
+    Returns passages with the company, filing date and section they came from,
+    so a claim drawn from one can be attributed rather than asserted. Ranked by
+    BM25.
+    """
+    # A database built before the text tables existed is still a valid
+    # database; it simply holds no filings. Missing tables must read as "no
+    # text loaded", not as a crash.
+    try:
+        total_chunks = int(conn.execute(
+            "SELECT COUNT(*) FROM filing_chunks").fetchone()[0])
+    except sqlite3.OperationalError:
+        total_chunks = 0
+
+    if not total_chunks:
+        return {
+            "query": query,
+            "results": [],
+            "count": 0,
+            "guidance": (
+                "No filing text is loaded in this database, so there is nothing "
+                "to quote. Say that plainly rather than paraphrasing a filing "
+                "from prior knowledge. Filing text is loaded separately with "
+                "`python -m sectorlens.ingest.fetch_filings`."),
+        }
+
+    match = _fts_query(query)
+    if not match:
+        return {"query": query, "results": [], "count": 0,
+                "guidance": "The question carried no searchable terms."}
+
+    sql = """
+        SELECT c.text AS text,
+               c.section AS section,
+               c.ordinal AS ordinal,
+               co.ticker AS ticker,
+               co.name AS name,
+               co.sector AS sector,
+               f.form AS form,
+               f.filed_date AS filed_date,
+               f.period_end AS period_end,
+               f.source_url AS source_url,
+               bm25(filing_chunks_fts) AS rank
+        FROM filing_chunks_fts
+        JOIN filing_chunks c ON c.id = filing_chunks_fts.rowid
+        JOIN filings f ON f.id = c.filing_id
+        JOIN companies co ON co.id = f.company_id
+        WHERE filing_chunks_fts MATCH ?
+    """
+    params: list[Any] = [match]
+    if sector:
+        sql += " AND co.sector = ?"
+        params.append(sector)
+    if ticker:
+        sql += " AND UPPER(co.ticker) = UPPER(?)"
+        params.append(ticker)
+    if section:
+        sql += " AND c.section = ?"
+        params.append(section)
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(_clamp(limit, 6))
+
+    rows = _rows(conn, sql, params)
+    out: dict[str, Any] = {
+        "query": query,
+        "filters": {"sector": sector, "ticker": ticker, "section": section},
+        "results": rows,
+        "count": len(rows),
+        "corpus_chunks": total_chunks,
+    }
+    if not rows:
+        out["guidance"] = (
+            "Nothing in the loaded filings matches this question. Say so "
+            "rather than answering from general knowledge about the company.")
+    else:
+        out["note"] = (
+            "These are passages a company wrote about itself in a filing. "
+            "Quote or paraphrase them with the ticker and filing date "
+            "attached, and do not present them as this system's own analysis.")
+    return out
+
+
+def describe_filing_coverage(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Which companies have filing text, and from when."""
+    try:
+        conn.execute("SELECT 1 FROM filings LIMIT 1")
+    except sqlite3.OperationalError:
+        return {"companies_with_text": 0, "filings": 0, "chunks": 0,
+                "by_sector": [], "sections": [],
+                "note": "This database predates the filing-text tables. "
+                        "Rebuild it to add them."}
+    return {
+        "companies_with_text": int(conn.execute(
+            "SELECT COUNT(DISTINCT company_id) FROM filings").fetchone()[0]),
+        "filings": int(conn.execute("SELECT COUNT(*) FROM filings").fetchone()[0]),
+        "chunks": int(conn.execute(
+            "SELECT COUNT(*) FROM filing_chunks").fetchone()[0]),
+        "by_sector": _rows(conn, """
+            SELECT co.sector, COUNT(DISTINCT f.company_id) AS companies,
+                   COUNT(DISTINCT f.id) AS filings
+            FROM filings f JOIN companies co ON co.id = f.company_id
+            GROUP BY co.sector ORDER BY co.sector"""),
+        "sections": _rows(conn, """
+            SELECT section, COUNT(*) AS chunks FROM filing_chunks
+            GROUP BY section ORDER BY section"""),
+    }

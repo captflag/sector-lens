@@ -63,7 +63,7 @@ Python 3.11+.
 make install                 # venv + dependencies
 cp .env.example .env         # add ANTHROPIC_API_KEY for reasoned answers
 make db                      # build the database (~15s, needs GitHub only)
-make test                    # 135 tests
+make test                    # 155 tests
 make demo                    # persona divergence, no key needed
 make eval                    # score answers against the case set
 
@@ -107,7 +107,7 @@ it.
                            │
                            │  MCP — JSON-RPC over stdio
                            ▼
-                   MCP server (10 tools)    ← separate process
+                   MCP server (11 tools)    ← separate process
                            │
                            ▼
                    SQLite, opened read-only
@@ -149,6 +149,7 @@ have had to fight.
 | `get_sector_benchmarks` | Medians and quartiles, to anchor comparative claims |
 | `compare_companies` | Side by side, naming any ticker not in the database |
 | `get_metric_history` | One metric across every period held, with direction of travel |
+| `search_filings` | **What management actually wrote** — passages with ticker, date and section |
 | `describe_data_coverage` | Sources, licences, ingest runs, open quality findings |
 
 `sector` and `persona` are enumerated in the tool schema rather than described
@@ -245,6 +246,46 @@ Recorded as rows in `data_quality_findings`, recomputed every build, surfaced by
    honest "no signal held". That is the intended behaviour, not a gap.
 5. **Logistics is thin** (14 companies). Medians over a set that small are
    indicative, not significant — and the build says so.
+
+---
+
+## What management actually said
+
+Numbers rank a company; they do not explain it. The screen can tell you a
+margin sits below its peers — it cannot tell you the company attributes that to
+a customer mix shift, and saying so anyway is exactly the invention this
+project exists to prevent.
+
+So the risk-factor and management-discussion sections of annual filings are
+indexed alongside the numbers:
+
+```bash
+export SECTORLENS_SEC_USER_AGENT="Your Name you@example.com"   # SEC requires this
+python -m sectorlens.ingest.fetch_filings --limit-per-sector 5 --years 1
+```
+
+`search_filings` returns passages with the ticker, filing date, section and
+source URL attached, so a claim drawn from one can be attributed rather than
+asserted. The agent is instructed to name the company and the date, to mark it
+as what management wrote rather than its own conclusion, and — when the search
+returns nothing — to say the filings do not address the question instead of
+reconstructing what a company "would have said". Retrieved text is the easiest
+place in a system like this to sound authoritative while inventing, so it
+carries the strictest attribution rule in the prompt.
+
+**BM25 over SQLite FTS5, not embeddings** — deliberately. No API key, no model
+download, no vector store, so the retrieval path stays reproducible offline and
+deployable anywhere the rest of this runs. Filing text also suits lexical
+search: the useful queries are full of specific terms — a segment name, a
+customer, "pricing pressure" — that dense retrieval tends to blur. The honest
+limit is the mirror of that: BM25 cannot match a paraphrase sharing no
+vocabulary with the passage, which is why a dense index alongside it is on the
+roadmap rather than dismissed.
+
+**The committed database holds no filing text.** SEC is unreachable from the
+environment this was developed in, so the ingest is written and tested against
+recorded filing HTML but has not been run at scale. `search_filings` reports
+that state rather than failing, and names the command that fixes it.
 
 ---
 
@@ -370,14 +411,16 @@ all unaffected. `GET /health` reports the remaining allowance.
    built from the public snapshot, so the trend metrics are present in the
    schema and absent from the data — which the build flags for itself. Loading
    real filings fixes three of the five caveats above.
-2. **Retrieval over filing text.** Every answer today is numeric, so the PE lens
-   argues from margin gaps because that is all it has. Management commentary
-   from a 10-K would let it argue an operational thesis from evidence — under
-   the same provenance discipline the numeric side already has.
-3. **An LLM judge on top of the eval.** Persona scoring is keyword-based, so it
+2. **Load the filing corpus.** The retrieval path is built and tested; the
+   committed database ships without text, because SEC is unreachable from the
+   environment this was developed in. One command fills it.
+3. **A dense index alongside BM25.** Lexical retrieval cannot match a
+   paraphrase that shares no vocabulary with the passage. Fusing the two
+   rankings is the standard fix and the schema does not stand in its way.
+4. **An LLM judge on top of the eval.** Persona scoring is keyword-based, so it
    measures whether the right concepts appear, not whether the reasoning is any
    good.
-4. **Prompt caching.** The system prompt and tool list are stable per
+5. **Prompt caching.** The system prompt and tool list are stable per
    persona/sector pair — a natural cache breakpoint.
 
 ## Limitations
