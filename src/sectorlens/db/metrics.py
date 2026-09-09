@@ -81,6 +81,16 @@ METRICS: tuple[MetricDef, ...] = (
               "Free cash flow divided by EBITDA.", True),
     MetricDef("revenue_growth_yoy", "Revenue growth (YoY)", "ratio",
               "Year on year revenue growth.", True),
+    MetricDef("revenue_cagr_3y", "Revenue CAGR (3y)", "ratio",
+              "Compound annual revenue growth across the loaded window. Needs "
+              "several fiscal years, so it exists only under the EDGAR "
+              "adapter.", True),
+    MetricDef("ebitda_margin_trend", "EBITDA margin trend", "ratio",
+              "Change in EBITDA margin from the earliest loaded year to the "
+              "latest, in margin points. Positive means the margin is "
+              "expanding. This is the difference between a company that is "
+              "cheap because it is improving and one that is cheap because it "
+              "is deteriorating -- a level alone cannot tell them apart.", True),
     MetricDef("price_vs_52w_range", "Position in 52-week range", "ratio",
               "0 = at the 52-week low, 1 = at the 52-week high.", None),
 

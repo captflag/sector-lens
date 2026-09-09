@@ -18,7 +18,7 @@ from sectorlens.settings import Settings
 EXPECTED_TOOLS = {
     "list_sectors", "list_companies", "find_company", "get_company_profile",
     "get_company_signals", "screen_sector", "get_sector_benchmarks",
-    "compare_companies", "describe_data_coverage",
+    "compare_companies", "describe_data_coverage", "get_metric_history",
 }
 
 
@@ -143,3 +143,27 @@ async def test_absent_records_are_not_treated_as_errors(mcp_app):
         payload = await toolbox.call_json("find_company", {"query": "Ferrari"})
         assert payload["in_database"] is False
         assert toolbox.calls[-1].ok is True
+
+
+async def test_metric_history_refuses_to_call_one_point_a_trend(mcp_app):
+    """The fixture holds a single undated period, so a direction claim would be
+    unfounded -- the tool has to say that rather than let the model infer one."""
+    from sectorlens.agent.mcp_client import open_toolbox
+
+    async with open_toolbox(mcp_app) as toolbox:
+        payload = await toolbox.call_json(
+            "get_metric_history", {"ticker": "BIGC", "metric": "ebitda_margin"})
+
+    assert payload["count"] == 1
+    assert "change" not in payload, "one period cannot yield a direction"
+    assert "not a trend" in payload["guidance"]
+
+
+async def test_metric_history_rejects_an_unknown_metric(mcp_app):
+    from sectorlens.agent.mcp_client import open_toolbox
+
+    async with open_toolbox(mcp_app) as toolbox:
+        payload = await toolbox.call_json(
+            "get_metric_history", {"ticker": "BIGC", "metric": "vibes"})
+        assert payload["error"] == "unknown_metric"
+        assert toolbox.calls[-1].ok is False

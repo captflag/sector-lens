@@ -483,3 +483,74 @@ def describe_data_coverage(conn: sqlite3.Connection,
             "If a question depends on a metric flagged here, say so rather than "
             "quoting the number as if it were clean."),
     }
+
+
+def get_metric_history(conn: sqlite3.Connection, ticker: str,
+                       metric: str) -> dict[str, Any]:
+    """One metric for one company across every period held.
+
+    Separate from `get_company_profile`, which returns the latest value of
+    everything. A question about direction -- is the margin expanding or
+    eroding -- needs the series, and a level cannot answer it. Where only one
+    period is held the response says so rather than letting a single point be
+    read as a trend.
+    """
+    company = conn.execute(
+        "SELECT id, ticker, name FROM companies WHERE UPPER(ticker) = UPPER(?)",
+        (ticker,),
+    ).fetchone()
+    if company is None:
+        return find_company(conn, ticker)
+
+    from .metrics import METRICS_BY_CODE
+
+    if metric not in METRICS_BY_CODE:
+        return {"error": "unknown_metric", "metric": metric,
+                "valid_metrics": sorted(METRICS_BY_CODE)}
+
+    rows = _rows(
+        conn,
+        """SELECT cm.period_end, cm.fiscal_period, cm.value, cm.is_derived,
+                  cm.derivation, s.name AS source_name
+           FROM company_metrics cm
+           LEFT JOIN sources s ON s.id = cm.source_id
+           WHERE cm.company_id = ? AND cm.metric_code = ?
+           ORDER BY COALESCE(cm.period_end, '0000-00-00')""",
+        (company["id"], metric),
+    )
+
+    definition = METRICS_BY_CODE[metric]
+    out: dict[str, Any] = {
+        "ticker": company["ticker"],
+        "name": company["name"],
+        "metric": metric,
+        "label": definition.label,
+        "unit": definition.unit,
+        "periods": rows,
+        "count": len(rows),
+    }
+
+    if not rows:
+        out["guidance"] = (
+            f"No values of {metric!r} are held for {company['ticker']}. Say so "
+            f"rather than estimating a direction.")
+        return out
+
+    if len(rows) == 1:
+        out["guidance"] = (
+            f"Only one period is held for {company['ticker']} "
+            f"({rows[0]['period_end'] or 'undated'}), so this is a level and "
+            f"not a trend. Do not describe it as rising or falling.")
+        return out
+
+    first, last = rows[0], rows[-1]
+    change = last["value"] - first["value"]
+    out["change"] = {
+        "from_period": first["period_end"],
+        "to_period": last["period_end"],
+        "from_value": first["value"],
+        "to_value": last["value"],
+        "absolute_change": change,
+        "direction": "rising" if change > 0 else "falling" if change < 0 else "flat",
+    }
+    return out

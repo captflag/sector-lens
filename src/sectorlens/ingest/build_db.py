@@ -32,7 +32,7 @@ ADAPTERS = {
 
 
 def build(adapter_name: str, db_path: Path, sectors: list[str] | None,
-          limit_per_sector: int | None, fresh: bool) -> int:
+          limit_per_sector: int | None, fresh: bool, years: int = 4) -> int:
     if adapter_name not in ADAPTERS:
         raise SystemExit(f"unknown adapter {adapter_name!r}; "
                          f"choose from {sorted(ADAPTERS)}")
@@ -40,7 +40,7 @@ def build(adapter_name: str, db_path: Path, sectors: list[str] | None,
     if fresh and db_path.exists():
         db_path.unlink()
 
-    adapter = (EdgarAdapter(limit_per_sector=limit_per_sector)
+    adapter = (EdgarAdapter(limit_per_sector=limit_per_sector, years=years)
                if adapter_name == "edgar" else PublicDatasetsAdapter())
 
     conn = connect(db_path)
@@ -101,12 +101,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="restrict the build to these sectors")
     parser.add_argument("--limit-per-sector", type=int, default=15,
                         help="EDGAR only: companies per sector (SEC rate limits)")
+    parser.add_argument("--years", type=int, default=4,
+                        help="EDGAR only: fiscal years to load per company. "
+                             "More than one is what makes trend metrics "
+                             "possible; the public adapter has no history.")
     parser.add_argument("--fresh", action="store_true",
                         help="delete the database first instead of upserting")
     args = parser.parse_args(argv)
 
     return build(args.adapter, args.db, args.sectors,
-                 args.limit_per_sector, args.fresh)
+                 args.limit_per_sector, args.fresh, args.years)
 
 
 if __name__ == "__main__":

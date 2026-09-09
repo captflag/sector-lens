@@ -30,6 +30,14 @@ from ..settings import get_settings
 from .base import Adapter, IngestResult, derive_from_fundamentals, growth_rate
 from .public_datasets import CONSTITUENTS_URL, _fetch_csv
 
+#: How the composed values were built, recorded with each stored fact so a
+#: reader can tell them from a line the company actually reported.
+_DERIVATIONS = {
+    "ebitda": "OperatingIncomeLoss + DepreciationDepletionAndAmortization",
+    "total_debt": "long-term debt + current portion / short-term borrowings",
+    "free_cash_flow": "operating cash flow - capital expenditure",
+}
+
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
 # Companies tag the same economic quantity under different US-GAAP concepts
@@ -95,6 +103,27 @@ def _resolve(facts: dict[str, Any], aliases: Iterable[str],
     return []
 
 
+def _by_period(facts: dict[str, Any], aliases: Iterable[str],
+               taxonomy: str = "us-gaap") -> dict[str, float]:
+    """Annual values for one concept, keyed by period end date.
+
+    Loading several years rather than only the latest is what turns "this
+    company has a 12% margin" into "this company's margin has gone from 8% to
+    12%". A level cannot distinguish a business that is cheap because it is
+    improving from one that is cheap because it is deteriorating.
+    """
+    out: dict[str, float] = {}
+    for row in _resolve(facts, aliases, taxonomy):
+        end = row.get("end")
+        if not end:
+            continue
+        try:
+            out[end] = float(row["val"])
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
 def _value_at(series: list[dict[str, Any]], index: int = 0) -> float | None:
     if len(series) > index:
         try:
@@ -113,9 +142,12 @@ class EdgarAdapter(Adapter):
     requests_per_second = 8.0
 
     def __init__(self, limit_per_sector: int | None = 15,
-                 timeout: float = 30.0) -> None:
+                 timeout: float = 30.0, years: int = 4) -> None:
         self.limit_per_sector = limit_per_sector
         self.timeout = timeout
+        #: Fiscal years to load per company. Four gives a three-year CAGR and a
+        #: margin trend with a year to spare when a filer's history is short.
+        self.years = max(1, int(years))
 
     def run(self, conn: sqlite3.Connection, run_id: int,
             sectors: Iterable[str] | None = None) -> IngestResult:
@@ -219,79 +251,119 @@ class EdgarAdapter(Adapter):
 
     def _load_company(self, conn: sqlite3.Connection, facts: dict[str, Any], *,
                       company_id: int, source_id: int, run_id: int) -> int:
+        """Load every fiscal year in the window, not just the latest.
+
+        Each period is written with its own `period_end`, so the facts table
+        carries a real time series and `v_company_latest_metrics` still surfaces
+        the most recent value for anything that wants a snapshot.
+        """
         written = 0
-        reported: dict[str, float | None] = {}
-        period_end: str | None = None
+        periods: dict[str, dict[str, float]] = {}
+
+        def put(end: str | None, code: str, value: float | None) -> None:
+            if end and value is not None:
+                periods.setdefault(end, {})[code] = value
 
         for code, aliases in CONCEPT_ALIASES.items():
-            series = _resolve(facts, aliases)
-            value = _value_at(series)
-            reported[code] = value
-            if series and period_end is None:
-                period_end = series[0].get("end")
-            if write_metric(conn, company_id=company_id, metric_code=code,
-                            value=value, source_id=source_id, run_id=run_id,
-                            period_end=series[0].get("end") if series else None,
-                            fiscal_period="FY"):
-                written += 1
+            for end, value in _by_period(facts, aliases).items():
+                put(end, code, value)
 
-        # EBITDA is not an XBRL concept; build it from operating income + D&A
-        # and record the arithmetic so it is never mistaken for a reported line.
-        op_series = _resolve(facts, ("OperatingIncomeLoss",))
-        da_series = _resolve(facts, DEPRECIATION_ALIASES)
-        op, da = _value_at(op_series), _value_at(da_series)
-        if op is not None and da is not None:
-            reported["ebitda"] = op + da
-            if write_metric(conn, company_id=company_id, metric_code="ebitda",
-                            value=op + da, source_id=source_id, run_id=run_id,
-                            period_end=op_series[0].get("end"),
-                            fiscal_period="FY", is_derived=True,
-                            derivation="OperatingIncomeLoss + "
-                                       "DepreciationDepletionAndAmortization"):
-                written += 1
+        # EBITDA is not an XBRL concept; build it per period from operating
+        # income plus D&A, and only where both sides describe the same year.
+        operating = _by_period(facts, ("OperatingIncomeLoss",))
+        depreciation = _by_period(facts, DEPRECIATION_ALIASES)
+        for end in operating.keys() & depreciation.keys():
+            put(end, "ebitda", operating[end] + depreciation[end])
 
-        long_debt = _value_at(_resolve(facts, DEBT_LONG_ALIASES)) or 0.0
-        short_debt = _value_at(_resolve(facts, DEBT_SHORT_ALIASES)) or 0.0
-        if long_debt or short_debt:
-            reported["total_debt"] = long_debt + short_debt
-            if write_metric(conn, company_id=company_id,
-                            metric_code="total_debt", value=long_debt + short_debt,
-                            source_id=source_id, run_id=run_id,
-                            fiscal_period="FY", is_derived=True,
-                            derivation="long-term debt + current portion / "
-                                       "short-term borrowings"):
-                written += 1
+        long_debt = _by_period(facts, DEBT_LONG_ALIASES)
+        short_debt = _by_period(facts, DEBT_SHORT_ALIASES)
+        for end in long_debt.keys() | short_debt.keys():
+            put(end, "total_debt", long_debt.get(end, 0.0) + short_debt.get(end, 0.0))
 
-        ocf = _value_at(_resolve(facts, OCF_ALIASES))
-        capex = _value_at(_resolve(facts, CAPEX_ALIASES))
-        if ocf is not None and capex is not None:
-            reported["free_cash_flow"] = ocf - capex
-            if write_metric(conn, company_id=company_id,
-                            metric_code="free_cash_flow", value=ocf - capex,
-                            source_id=source_id, run_id=run_id,
-                            fiscal_period="FY", is_derived=True,
-                            derivation="operating cash flow - capital expenditure"):
-                written += 1
+        operating_cash = _by_period(facts, OCF_ALIASES)
+        capex = _by_period(facts, CAPEX_ALIASES)
+        for end in operating_cash.keys() & capex.keys():
+            put(end, "free_cash_flow", operating_cash[end] - capex[end])
 
-        rev_series = _resolve(facts, CONCEPT_ALIASES["revenue_ttm"])
-        growth = growth_rate(_value_at(rev_series, 0), _value_at(rev_series, 1))
+        # Newest first, then trimmed to the requested window.
+        ordered = sorted(periods, reverse=True)[: self.years]
+        if not ordered:
+            return 0
+
+        for end in ordered:
+            values = periods[end]
+            for code, value in values.items():
+                derived = code in ("ebitda", "total_debt", "free_cash_flow")
+                if write_metric(
+                        conn, company_id=company_id, metric_code=code,
+                        value=value, source_id=source_id, run_id=run_id,
+                        period_end=end, fiscal_period="FY",
+                        is_derived=derived,
+                        derivation=_DERIVATIONS.get(code) if derived else None):
+                    written += 1
+
+            for d in derive_from_fundamentals(values):
+                if write_metric(conn, company_id=company_id, metric_code=d.code,
+                                value=d.value, source_id=source_id, run_id=run_id,
+                                period_end=end, fiscal_period="FY",
+                                is_derived=True, derivation=d.derivation):
+                    written += 1
+
+        written += self._load_trajectory(
+            conn, periods, ordered, company_id=company_id,
+            source_id=source_id, run_id=run_id)
+        return written
+
+    def _load_trajectory(self, conn: sqlite3.Connection,
+                         periods: dict[str, dict[str, float]],
+                         ordered: list[str], *, company_id: int,
+                         source_id: int, run_id: int) -> int:
+        """Metrics that only exist because several years were loaded."""
+        if len(ordered) < 2:
+            return 0
+
+        written = 0
+        latest, earliest = ordered[0], ordered[-1]
+        span_years = len(ordered) - 1
+
+        latest_rev = periods[latest].get("revenue_ttm")
+        prior_rev = periods[ordered[1]].get("revenue_ttm")
+        earliest_rev = periods[earliest].get("revenue_ttm")
+
+        growth = growth_rate(latest_rev, prior_rev)
         if growth is not None:
-            if write_metric(conn, company_id=company_id,
-                            metric_code="revenue_growth_yoy", value=growth,
-                            source_id=source_id, run_id=run_id,
-                            period_end=rev_series[0].get("end"),
-                            fiscal_period="FY", is_derived=True,
-                            derivation=(f"({rev_series[0]['end']} revenue - "
-                                        f"{rev_series[1]['end']} revenue) / "
-                                        f"{rev_series[1]['end']} revenue")):
-                written += 1
+            written += write_metric(
+                conn, company_id=company_id, metric_code="revenue_growth_yoy",
+                value=growth, source_id=source_id, run_id=run_id,
+                period_end=latest, fiscal_period="FY", is_derived=True,
+                derivation=f"({latest} revenue - {ordered[1]} revenue) "
+                           f"/ {ordered[1]} revenue")
 
-        for d in derive_from_fundamentals(reported):
-            if write_metric(conn, company_id=company_id, metric_code=d.code,
-                            value=d.value, source_id=source_id, run_id=run_id,
-                            period_end=period_end, fiscal_period="FY",
-                            is_derived=True, derivation=d.derivation):
-                written += 1
+        if latest_rev and earliest_rev and earliest_rev > 0 and span_years >= 2:
+            cagr = (latest_rev / earliest_rev) ** (1 / span_years) - 1
+            written += write_metric(
+                conn, company_id=company_id, metric_code="revenue_cagr_3y",
+                value=cagr, source_id=source_id, run_id=run_id,
+                period_end=latest, fiscal_period="FY", is_derived=True,
+                derivation=f"({latest} revenue / {earliest} revenue) ^ "
+                           f"(1/{span_years}) - 1")
+
+        def margin(end: str) -> float | None:
+            values = periods[end]
+            revenue, ebitda = values.get("revenue_ttm"), values.get("ebitda")
+            if revenue and revenue > 0 and ebitda is not None:
+                return ebitda / revenue
+            return None
+
+        latest_margin, earliest_margin = margin(latest), margin(earliest)
+        if latest_margin is not None and earliest_margin is not None:
+            written += write_metric(
+                conn, company_id=company_id, metric_code="ebitda_margin_trend",
+                value=latest_margin - earliest_margin,
+                source_id=source_id, run_id=run_id, period_end=latest,
+                fiscal_period="FY", is_derived=True,
+                derivation=f"{latest} EBITDA margin ({latest_margin:.4f}) - "
+                           f"{earliest} EBITDA margin ({earliest_margin:.4f})")
         return written
 
     def _load_signals(self, conn: sqlite3.Connection, facts: dict[str, Any], *,

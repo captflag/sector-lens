@@ -63,7 +63,7 @@ Python 3.11+.
 make install                 # venv + dependencies
 cp .env.example .env         # add ANTHROPIC_API_KEY for reasoned answers
 make db                      # build the database (~15s, needs GitHub only)
-make test                    # 119 tests
+make test                    # 135 tests
 make demo                    # persona divergence, no key needed
 make eval                    # score answers against the case set
 
@@ -107,7 +107,7 @@ it.
                            │
                            │  MCP — JSON-RPC over stdio
                            ▼
-                   MCP server (9 tools)     ← separate process
+                   MCP server (10 tools)    ← separate process
                            │
                            ▼
                    SQLite, opened read-only
@@ -148,6 +148,7 @@ have had to fight.
 | `screen_sector` | **Persona-weighted ranking** — the primary evidence source |
 | `get_sector_benchmarks` | Medians and quartiles, to anchor comparative claims |
 | `compare_companies` | Side by side, naming any ticker not in the database |
+| `get_metric_history` | One metric across every period held, with direction of travel |
 | `describe_data_coverage` | Sources, licences, ingest runs, open quality findings |
 
 `sector` and `persona` are enumerated in the tool schema rather than described
@@ -202,6 +203,26 @@ headcount where a filer tags it. Restatements supersede originals by filing
 date, and each metric resolves through an ordered list of concept aliases,
 because companies tag the same quantity under different US-GAAP concepts. SEC
 requires a contact string and caps clients at 10 req/s; the adapter enforces 8.
+
+```bash
+make db-edgar                                       # four fiscal years
+python -m sectorlens.ingest.build_db --adapter edgar --years 6 --fresh
+```
+
+**Several years, not one.** EBITDA is composed per period from that year's
+operating income and D&A, never mixed across years, and every value is stored
+with its own `period_end` — so the facts table is a real time series while the
+snapshot view still returns the latest value for anything that wants one.
+
+That is what makes `ebitda_margin_trend` and `revenue_cagr_3y` possible, and
+they matter more than they look: **a 12% margin arrived at from 8% and a 12%
+margin arrived at from 16% are opposite stories, and a level cannot tell them
+apart.** The equity persona weights the trend alongside the level for exactly
+that reason.
+
+`get_metric_history` exposes the series, and refuses to describe a single
+stored period as rising or falling — under the default adapter that is every
+company, and the tool says so rather than letting one point be read as a trend.
 
 Current database: 163 companies across four sectors — tech 73, manufacturing
 54, retail 22, logistics 14.
@@ -344,9 +365,11 @@ all unaffected. `GET /health` reports the remaining allowance.
 
 ## Roadmap
 
-1. **EDGAR as the primary source, with multi-year history.** Fixes three of the
-   five caveats above and turns "who is improving and who is under pressure"
-   from a cross-section into a trajectory.
+1. **Run the EDGAR ingest at scale.** The multi-year loader is written and
+   tested against recorded filing payloads; the committed database is still
+   built from the public snapshot, so the trend metrics are present in the
+   schema and absent from the data — which the build flags for itself. Loading
+   real filings fixes three of the five caveats above.
 2. **Retrieval over filing text.** Every answer today is numeric, so the PE lens
    argues from margin gaps because that is all it has. Management commentary
    from a 10-K would let it argue an operational thesis from evidence — under

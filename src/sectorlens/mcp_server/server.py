@@ -191,6 +191,24 @@ def compare_companies(tickers: list[str], metrics: list[str] | None = None) -> d
 
 @mcp.tool(
     description=(
+        "The full history held for one metric on one company, oldest first, "
+        "with the direction of travel. Use this for any question about whether "
+        "something is improving or deteriorating -- a single latest value is a "
+        "level, not a trend, and this tool says so explicitly when only one "
+        "period exists."
+    )
+)
+def get_metric_history(ticker: str, metric: str) -> dict[str, Any]:
+    """Args:
+    ticker: exchange ticker, e.g. "UNP".
+    metric: metric code, e.g. "ebitda_margin" or "revenue_ttm".
+    """
+    with _conn() as c:
+        return q.get_metric_history(c, ticker, metric)
+
+
+@mcp.tool(
+    description=(
         "What this database contains and where it should not be trusted: "
         "coverage per sector, the upstream sources with licences and retrieval "
         "times, recent ingest runs, and open data-quality findings. Call this "
