@@ -1,0 +1,39 @@
+[project]
+name = "sectorlens"
+version = "0.1.0"
+description = "Persona-configurable financial analyst agent over an MCP tool boundary"
+requires-python = ">=3.11"  # BaseExceptionGroup (agent/core.py) is 3.11+
+dependencies = [
+    "mcp>=2.0",
+    "anthropic>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "streamlit>=1.36",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+sectorlens-mcp = "sectorlens.mcp_server.server:main"
+sectorlens-build-db = "sectorlens.ingest.build_db:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sectorlens = ["config/*.yaml", "db/*.sql"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+asyncio_mode = "auto"

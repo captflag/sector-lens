@@ -1,0 +1,75 @@
+# Sector definitions.
+#
+# Four sectors, chosen to span different economics: a high-margin one (tech), a
+# thin-margin high-turnover one (retail), a capital-intensive one
+# (manufacturing) and an operationally leveraged one (logistics). The personas
+# should reach visibly different conclusions across that spread. Sectors are
+# pure config: adding a fifth means adding a block here and re-running ingest.
+#
+# Membership is defined against the GICS taxonomy published with the S&P 500
+# constituents dataset, so "which companies are in this sector" is a documented,
+# reproducible rule rather than a hand-picked list.
+
+sectors:
+  tech:
+    label: Technology
+    description: >-
+      Software, semiconductors, IT services and technology hardware. Mapped to
+      the GICS "Information Technology" sector in full.
+    gics_sectors: ["Information Technology"]
+    gics_sub_industries: []
+
+  retail:
+    label: Retail
+    description: >-
+      Companies whose primary business is selling goods to end consumers, plus
+      the distributors that supply them. Deliberately EXCLUDES restaurants
+      (food service, not merchandise retail) -- see README data notes.
+    gics_sectors: []
+    gics_sub_industries:
+      - "Apparel Retail"
+      - "Automotive Retail"
+      - "Broadline Retail"
+      - "Computer & Electronics Retail"
+      - "Home Improvement Retail"
+      - "Homefurnishing Retail"
+      - "Other Specialty Retail"
+      - "Consumer Staples Merchandise Retail"
+      - "Food Retail"
+      - "Food Distributors"
+      - "Distributors"
+
+  manufacturing:
+    label: Manufacturing
+    description: >-
+      Industrial goods producers: machinery, aerospace & defence, electrical
+      equipment, building products and vehicle manufacturing. Excludes
+      "Electronic Manufacturing Services", which is classified under tech.
+    gics_sectors: []
+    gics_sub_industries:
+      - "Aerospace & Defense"
+      - "Agricultural & Farm Machinery"
+      - "Building Products"
+      - "Construction Machinery & Heavy Transportation Equipment"
+      - "Electrical Components & Equipment"
+      - "Heavy Electrical Equipment"
+      - "Industrial Conglomerates"
+      - "Industrial Machinery & Supplies & Components"
+      - "Automobile Manufacturers"
+      - "Automotive Parts & Equipment"
+
+  logistics:
+    label: Logistics & Transportation
+    description: >-
+      Movement of freight and people: air freight, ground and rail cargo,
+      airlines and passenger ground transport. Excludes energy midstream
+      ("Oil & Gas Storage & Transportation"), which is a commodity business.
+    gics_sectors: []
+    gics_sub_industries:
+      - "Air Freight & Logistics"
+      - "Cargo Ground Transportation"
+      - "Rail Transportation"
+      - "Passenger Airlines"
+      - "Passenger Ground Transportation"
+      - "Marine Transportation"
+      - "Transportation Infrastructure"

@@ -1,0 +1,129 @@
+# Evaluation cases.
+#
+# Each case declares what a good answer must satisfy, so a prompt change can be
+# measured rather than eyeballed. The set covers four things:
+#
+#   * that the personas diverge on an identical question (the core claim);
+#   * that each persona reasons in the terms its own mandate implies;
+#   * that the agent refuses to invent data it does not hold;
+#   * that comparative claims get anchored to a measured reference.
+#
+# `personas: [all]` fans a case out across all three personas and additionally
+# scores cross-persona divergence.
+
+cases:
+  - id: cross_persona_capital_deployment
+    query: "Given what you can see, would you be adding exposure to this sector today or staying out?"
+    sector: tech
+    personas: [all]
+    expects:
+      divergent_across_personas: true
+      min_companies_referenced: 1
+
+  - id: pe_leveraged_buyout_candidates
+    query: "Screen this sector for a leveraged buyout. Which names could carry debt, and where would the equity return come from?"
+    sector: logistics
+    personas: [pe_analyst]
+    expects:
+      min_companies_referenced: 3
+      min_evidence: 3
+
+  - id: mf_core_versus_avoid
+    query: "Split these names into ones I could hold for five years and ones I should stay away from, and say why."
+    sector: retail
+    personas: [mutual_fund_analyst]
+    expects:
+      min_companies_referenced: 2
+      min_evidence: 2
+
+  - id: equity_margin_dispersion
+    query: "How wide is the margin dispersion across these companies, and who sits at each end of it?"
+    sector: manufacturing
+    personas: [equity_analyst]
+    expects:
+      min_companies_referenced: 2
+      cites_metrics: [ebitda_margin, net_margin]
+
+  - id: pe_single_take_private
+    query: "One name only: which would you take private, and what is the operational case for it?"
+    sector: tech
+    personas: [pe_analyst]
+    expects:
+      min_companies_referenced: 1
+      min_evidence: 2
+
+  # -- Grounding: the agent must not fill a gap it cannot fill ---------------
+
+  - id: absent_workforce_signal
+    query: "How many people does UPS employ, and has that number been moving?"
+    sector: logistics
+    personas: [pe_analyst]
+    expects:
+      # Headcount is populated only where a filer tags it. Where it is absent
+      # the only correct answer is to say so; a number here is invention.
+      admits_missing_signal: true
+      no_invented_headcount: true
+
+  - id: company_outside_the_universe
+    query: "How does Ferrari stack up against the names you cover?"
+    sector: tech
+    personas: [equity_analyst]
+    expects:
+      out_of_scope_contains: ["Ferrari"]
+      not_referenced: ["Ferrari"]
+
+  - id: sector_outside_the_universe
+    query: "What is your read on biotech at the moment?"
+    sector: tech
+    personas: [mutual_fund_analyst]
+    expects:
+      mentions_scope_limit: true
+
+  # -- Anchoring: a comparative claim needs a measured reference -------------
+
+  - id: comparative_claim_needs_an_anchor
+    query: "Is this sector expensive right now, or is that just the headline names?"
+    sector: tech
+    personas: [mutual_fund_analyst]
+    expects:
+      # "Expensive" means nothing without something to be expensive against, so
+      # the answer has to reach for the sector distribution rather than assert
+      # a level.
+      min_evidence: 2
+      cites_metrics: [pe_ratio]
+
+  - id: head_to_head_comparison
+    query: "Put UPS and FedEx side by side. Which is the better business on the numbers you have?"
+    sector: logistics
+    personas: [equity_analyst]
+    expects:
+      min_companies_referenced: 2
+      min_evidence: 2
+
+# Concepts each persona's prose is expected to engage with. Scored as "at least
+# one term from each group appears", so a persona can express an idea in its own
+# words rather than matching a single phrase.
+persona_rubrics:
+  mutual_fund_analyst:
+    - name: benchmark_relative
+      any_of: ["sector median", "median", "benchmark", "relative to", "peer", "index"]
+    - name: position_or_portfolio
+      any_of: ["position", "portfolio", "holding", "weight", "sizing", "core"]
+    - name: durability
+      any_of: ["growth", "durable", "sustainable", "compound", "quality"]
+
+  equity_analyst:
+    - name: margins
+      any_of: ["margin", "ebitda", "profitability", "operating leverage"]
+    - name: valuation
+      any_of: ["multiple", "p/e", "pe ratio", "valuation", "earnings yield", "cheap", "expensive"]
+    - name: earnings
+      any_of: ["earnings", "eps", "revenue", "top line"]
+
+  pe_analyst:
+    - name: entry_multiple
+      any_of: ["entry multiple", "ev/ebitda", "ev to ebitda", "entry", "multiple"]
+    - name: leverage_or_cash
+      any_of: ["leverage", "debt", "turns", "cash flow", "fcf", "cash generation"]
+    - name: operational_or_exit
+      any_of: ["operational", "operating levers", "exit", "take private", "sponsor", "thesis"]
