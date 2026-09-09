@@ -113,6 +113,10 @@ it.
                    SQLite, opened read-only
 ```
 
+> **[Component and sequence diagrams →](docs/architecture.md)** — how a request
+> moves through the tool loop, where the persona bites, and what happens when
+> the model is unreachable.
+
 Both interfaces call the same `Agent.ask` and serialise the same
 `AgentResponse`, so "one agent, two interfaces" is structural rather than a
 convention someone has to maintain.
